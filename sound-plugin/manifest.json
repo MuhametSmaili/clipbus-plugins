@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 5,
+  "plugin": {
+    "id": "plugin.clipbus.sound",
+    "title": "Copy Sound",
+    "version": "1.0.0"
+  },
+  "install": {
+    "runtime": "node",
+    "entry": "scripts/install.mjs"
+  },
+  "runtime": {
+    "nodeEntry": "dist/plugin.cjs"
+  },
+  "detectors": [
+    {
+      "id": "copy-sound",
+      "title": "Copy Sound Detector",
+      "inputKinds": ["text", "image"]
+    }
+  ]
+}
