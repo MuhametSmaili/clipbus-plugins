@@ -1,54 +1,44 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const childProcess = require("node:child_process");
 const { readFileSync } = require("node:fs");
-const { homedir } = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 
 const root = path.resolve(__dirname, "..");
 const manifest = require("../manifest.json");
 const plugin = require(path.join(root, manifest.runtime.nodeEntry)).default;
+const defaultPath = "package/assets/click.wav";
 
-function createLaunchContext(platform = "macos") {
+function launch(platform = "macos", supported = true) {
   return {
     protocol: 2,
     plugin: manifest.plugin,
-    host: { platform, version: "2.0.0", devMode: true },
-    dirs: {
-      root,
-      data: path.join(root, "data"),
-      cache: path.join(root, "cache"),
-    },
-    capabilities: [],
+    host: { platform, version: "test", devMode: true },
+    dirs: { root, data: path.join(root, "data"), cache: path.join(root, "cache") },
+    capabilities: supported ? ["system.playSound"] : [],
   };
 }
 
-async function setupPlugin(platform = "macos") {
-  return plugin.setup(createLaunchContext(platform));
-}
-
-function createInput(trigger, kind = "text") {
+function input(trigger, kind = "text") {
   return {
     trigger,
     item: {
-      id: "test-item",
-      kind,
-      tags: [],
-      pinned: false,
-      createdAt: 1,
-      lastCopiedAt: 2,
-      attachments: [],
+      id: "test-item", kind, tags: [], pinned: false,
+      createdAt: 1, lastCopiedAt: 2, attachments: [],
     },
-    content:
-      kind === "text"
-        ? { kind, text: "private clipboard text" }
-        : { kind, width: 1, height: 1, format: "png", bytes: 68 },
+    content: kind === "text"
+      ? { kind, text: "private clipboard text" }
+      : { kind, width: 1, height: 1, format: "png", bytes: 68 },
   };
 }
 
-function createHost({ settings = {}, settingsError, logError } = {}) {
+async function fixture({
+  platform = "macos", supported = true, settings = {},
+  settingsError, logError, playSound,
+} = {}) {
+  const context = launch(platform, supported);
+  const registry = await plugin.setup(context);
   const calls = [];
   const call = async (method, params) => {
     calls.push({ method, params });
@@ -56,30 +46,32 @@ function createHost({ settings = {}, settingsError, logError } = {}) {
       if (settingsError) throw settingsError;
       return { values: settings };
     }
+    if (method === "system.playSound" && playSound) return playSound(params);
     if (method === "log.write" && logError) throw logError;
     return {};
   };
-
+  const ctx = {
+    launch: context,
+    capabilities: { has: (method) => context.capabilities.includes(method) },
+    settings: { get: () => call("settings.get", {}) },
+    system: { playSound: (params) => call("system.playSound", params) },
+    log: { write: (params) => call("log.write", params) },
+  };
   return {
-    calls,
-    ctx: {
-      launch: createLaunchContext(),
-      call,
-      settings: { get: () => call("settings.get", {}) },
-      log: { write: (params) => call("log.write", params) },
-    },
+    registry, calls,
+    detect: (trigger = "copy", kind = "text") => registry.detectors["copy-sound"](input(trigger, kind), ctx),
+    sounds: () => calls.filter(({ method }) => method === "system.playSound").map(({ params }) => params),
+    warnings: () => calls.filter(({ method }) => method === "log.write").map(({ params }) => params),
   };
 }
 
-test("manifest and built runtime register exactly one detector, no UI or actions", async () => {
-  const launchContext = createLaunchContext();
+function hostError(name) {
+  return Object.assign(new Error("private error details"), { name });
+}
 
-  const registry = await plugin.setup(launchContext);
-
-  assert.deepEqual(
-    Object.keys(registry.detectors),
-    manifest.detectors.map(({ id }) => id),
-  );
+test("the built runtime registers the declared detector with no UI, actions or writes", async () => {
+  const { registry } = await fixture();
+  assert.deepEqual(Object.keys(registry.detectors), manifest.detectors.map(({ id }) => id));
   assert.deepEqual(manifest.detectors[0].inputKinds, ["text", "image"]);
   assert.equal(manifest.actions, undefined);
   assert.equal(manifest.renderers, undefined);
@@ -88,381 +80,238 @@ test("manifest and built runtime register exactly one detector, no UI or actions
 
 for (const trigger of ["copy", "recopy"]) {
   for (const kind of ["text", "image"]) {
-    test(`${kind} ${trigger} plays the bundled sound quietly`, async (t) => {
-      const playback = t.mock.method(
-        childProcess,
-        "execFile",
-        (_command, _args, _options, callback) => {
-          callback(null);
-        },
-      );
-      const { detectors } = await setupPlugin();
-      const { ctx, calls } = createHost();
-      const input = createInput(trigger, kind);
-
-      await detectors["copy-sound"](input, ctx);
-
-      assert.equal(playback.mock.callCount(), 1);
-      assert.deepEqual(playback.mock.calls[0].arguments.slice(0, 3), [
-        "/usr/bin/afplay",
-        ["-v", "0.25", path.join(root, "assets", "click.aiff")],
-        { timeout: 1000, maxBuffer: 16 * 1024 },
+    test(kind + " " + trigger + " requests the click at 25 percent", async () => {
+      const f = await fixture();
+      await f.detect(trigger, kind);
+      assert.deepEqual(f.calls, [
+        { method: "settings.get", params: {} },
+        { method: "system.playSound", params: { path: defaultPath, volume: 25 } },
       ]);
-      assert.deepEqual(calls, [{ method: "settings.get", params: {} }]);
     });
   }
 }
 
-const silentCases = [
-  { platform: "macos", trigger: "edit" },
-  { platform: "macos", trigger: "manual" },
-  { platform: "windows", trigger: "copy" },
-  { platform: "windows", trigger: "recopy" },
-];
-
-for (const { platform, trigger } of silentCases) {
-  test(`${platform} ${trigger} does not start playback`, async (t) => {
-    const playback = t.mock.method(
-      childProcess,
-      "execFile",
-      (_command, _args, _options, callback) => {
-        callback(null);
-      },
-    );
-    const { detectors } = await setupPlugin(platform);
-    const { ctx, calls } = createHost();
-    const input = createInput(trigger);
-
-    await detectors["copy-sound"](input, ctx);
-
-    assert.equal(playback.mock.callCount(), 0);
-    assert.deepEqual(calls, []);
+for (const platform of ["macos", "windows"]) {
+  for (const trigger of ["edit", "manual"]) {
+    test(platform + " " + trigger + " stays silent", async () => {
+      const f = await fixture({ platform });
+      await f.detect(trigger);
+      assert.deepEqual(f.calls, []);
+    });
+  }
+  test(platform + " without the sound capability is skipped", async () => {
+    const f = await fixture({ platform, supported: false });
+    await f.detect();
+    assert.deepEqual(f.calls, []);
   });
 }
 
-test("playback is awaited before the detector returns", async (t) => {
-  let finishPlayback;
-  let notifyPlaybackStarted;
+test("a sound-capable Windows Host is not excluded by a platform whitelist", async () => {
+  const f = await fixture({ platform: "windows" });
+  await f.detect();
+  assert.deepEqual(f.sounds(), [{ path: defaultPath, volume: 25 }]);
+});
+
+test("the detector awaits the Host request before returning", async () => {
+  let finish;
+  let started;
   let completed = false;
-  const playbackStarted = new Promise((resolve) => {
-    notifyPlaybackStarted = resolve;
+  const requestStarted = new Promise((resolve) => { started = resolve; });
+  const f = await fixture({
+    playSound: () => new Promise((resolve) => { finish = resolve; started(); }),
   });
-  t.mock.method(
-    childProcess,
-    "execFile",
-    (_command, _args, _options, callback) => {
-      finishPlayback = callback;
-      notifyPlaybackStarted();
-    },
-  );
-  const { detectors } = await setupPlugin();
-  const { ctx } = createHost();
-  const input = createInput("copy");
-
-  const pending = detectors["copy-sound"](input, ctx).then(() => {
-    completed = true;
-  });
-  await playbackStarted;
-  const completedBeforePlayback = completed;
-  finishPlayback(null);
+  const pending = f.detect().then(() => { completed = true; });
+  await requestStarted;
+  assert.equal(completed, false);
+  finish({});
   await pending;
-
-  assert.equal(completedBeforePlayback, false);
   assert.equal(completed, true);
 });
 
-for (const failureMode of ["callback error", "synchronous exception"]) {
-  test(`${failureMode} is logged safely and the next copy retries`, async (t) => {
-    const error = new Error("private clipboard text must not appear in a log");
-    const playback = t.mock.method(
-      childProcess,
-      "execFile",
-      (_command, _args, _options, callback) => {
-        if (failureMode === "synchronous exception") throw error;
-        callback(error);
-      },
-    );
-    const { detectors } = await setupPlugin();
-    const { ctx, calls } = createHost();
-    const copy = createInput("copy");
-    const recopy = createInput("recopy");
+const pathCases = [
+  { value: "package/assets/copy 'click';.wav", expected: "package/assets/copy 'click';.wav" },
+  { value: "package/assets/custom.mp3", expected: "package/assets/custom.mp3" },
+  { value: "package/assets/custom.aiff", expected: "package/assets/custom.aiff" },
+  { value: defaultPath, expected: defaultPath },
+  ...[
+    "/Users/example/copy.wav", "~/Sounds/copy.aiff", "assets/copy.wav",
+    "file:///Users/example/copy.wav", "https://example.com/copy.wav",
+    "data/copy.wav", "cache/copy.wav", "package/../copy.wav",
+    "package/assets/../copy.wav", "package//copy.wav", "package/./copy.wav",
+    "package/assets/copy\\click.wav", "package/assets/copy\0.wav",
+    "package/assets/copy\n.wav", "package/", "", 42, null,
+    "package/" + "声".repeat(400) + ".wav",
+  ].map((value) => ({ value, expected: defaultPath })),
+];
 
-    await detectors["copy-sound"](copy, ctx);
-    await detectors["copy-sound"](recopy, ctx);
-    const logCalls = calls.filter(({ method }) => method === "log.write");
+for (const { value, expected } of pathCases) {
+  test("resolves sound path safely: " + JSON.stringify(value).slice(0, 80), async () => {
+    const f = await fixture({ settings: { soundPath: value } });
+    await f.detect();
+    assert.deepEqual(f.sounds(), [{ path: expected, volume: 25 }]);
+    assert.deepEqual(f.warnings(), []);
+  });
+}
 
-    assert.equal(playback.mock.callCount(), 2);
-    assert.equal(
-      calls.filter(({ method }) => method === "settings.get").length,
-      2,
-    );
-    assert.equal(logCalls.length, 2);
-    for (const { method, params } of logCalls) {
-      assert.equal(method, "log.write");
-      assert.equal(params.level, "warn");
-      assert.match(params.message, /could not play/);
-      assert.ok(!params.message.includes(copy.content.text));
+for (const [volume, expected] of [[0.25, 25], [0.5, 50], [0.6, 60], [1, 100], [0.126, 13]]) {
+  test("normalizes legacy gain " + volume + " to " + expected + " percent", async () => {
+    const f = await fixture({ settings: { volume } });
+    await f.detect();
+    assert.deepEqual(f.sounds(), [{ path: defaultPath, volume: expected }]);
+  });
+}
+
+for (const volume of ["0.5", null, -1, 2, NaN, Infinity]) {
+  test("invalid volume uses 25 percent: " + String(volume), async () => {
+    const f = await fixture({ settings: { volume } });
+    await f.detect();
+    assert.deepEqual(f.sounds(), [{ path: defaultPath, volume: 25 }]);
+  });
+}
+
+for (const volume of [0, 0.001]) {
+  test("volume rounded to zero mutes without occupying a Host slot: " + volume, async () => {
+    const f = await fixture({ settings: { volume } });
+    await f.detect();
+    assert.deepEqual(f.calls, [{ method: "settings.get", params: {} }]);
+  });
+}
+
+for (const soundPath of [defaultPath, "package/assets/custom.mp3"]) {
+  test("busy playback skips without retry or fallback: " + soundPath, async () => {
+    const f = await fixture({
+      settings: { soundPath },
+      playSound: () => { throw hostError("PluginLimitExceeded"); },
+    });
+    await f.detect();
+    assert.deepEqual(f.sounds(), [{ path: soundPath, volume: 25 }]);
+    assert.deepEqual(f.warnings(), []);
+  });
+}
+
+test("a custom resource failure falls back to WAV at the configured volume", async () => {
+  const soundPath = "package/assets/private-custom.aiff";
+  const f = await fixture({
+    settings: { soundPath, volume: 0.4 },
+    playSound: ({ path: requested }) => {
+      if (requested === soundPath) throw hostError("PluginResourceRejected");
+      return {};
+    },
+  });
+  await f.detect();
+  assert.deepEqual(f.sounds(), [
+    { path: soundPath, volume: 40 }, { path: defaultPath, volume: 40 },
+  ]);
+  assert.equal(f.warnings().length, 1);
+  assert.match(f.warnings()[0].message, /bundled click/);
+  assert.ok(!f.warnings()[0].message.includes(soundPath));
+});
+
+test("a busy fallback skips without warning or further retries", async () => {
+  const soundPath = "package/assets/custom.mp3";
+  const f = await fixture({
+    settings: { soundPath },
+    playSound: ({ path: requested }) => {
+      throw hostError(requested === soundPath ? "PluginResourceRejected" : "PluginLimitExceeded");
+    },
+  });
+  await f.detect();
+  assert.equal(f.sounds().length, 2);
+  assert.deepEqual(f.warnings(), []);
+});
+
+for (const errorName of ["PluginResourceRejected", "PluginInvalidRequest"]) {
+  test("a Host that rejects the resource or volume is logged safely: " + errorName, async () => {
+    const f = await fixture({ playSound: () => { throw hostError(errorName); } });
+    await f.detect("copy");
+    await f.detect("recopy");
+    assert.equal(f.sounds().length, 2);
+    assert.equal(f.warnings().length, 2);
+    for (const warning of f.warnings()) {
+      assert.equal(warning.level, "warn");
+      assert.match(warning.message, /Host support/);
+      assert.ok(!warning.message.includes("private"));
     }
   });
 }
 
-test("sound is a bundled nonempty AIFF file", () => {
-  const soundPath = path.join(root, "assets", "click.aiff");
-
-  const sound = readFileSync(soundPath);
-
-  assert.equal(sound.toString("ascii", 0, 4), "FORM");
-  assert.equal(sound.toString("ascii", 8, 12), "AIFF");
-  assert.ok(sound.length > 512);
-});
-
-const defaultSoundPath = path.join(root, "assets", "click.aiff");
-const configurationCases = [
-  {
-    name: "absolute paths preserve spaces and shell characters",
-    settings: {
-      soundPath: "/Users/example/Sounds/copy 'click';.wav",
-      volume: 0.6,
-    },
-    expectedPath: "/Users/example/Sounds/copy 'click';.wav",
-    expectedVolume: "0.6",
-  },
-  {
-    name: "home-relative paths expand to the home directory",
-    settings: { soundPath: "~/Sounds/copy.aiff" },
-    expectedPath: path.join(homedir(), "Sounds", "copy.aiff"),
-  },
-  {
-    name: "the bundled path can be configured explicitly",
-    settings: { soundPath: defaultSoundPath },
-  },
-  {
-    name: "relative paths use the bundled sound",
-    settings: { soundPath: "Sounds/copy.wav" },
-  },
-  {
-    name: "file URLs use the bundled sound",
-    settings: { soundPath: "file:///Users/example/copy.wav" },
-  },
-  {
-    name: "empty paths use the bundled sound",
-    settings: { soundPath: "" },
-  },
-  {
-    name: "non-string paths use the bundled sound",
-    settings: { soundPath: 42 },
-  },
-  {
-    name: "null paths use the bundled sound",
-    settings: { soundPath: null },
-  },
-  {
-    name: "paths with null bytes use the bundled sound",
-    settings: { soundPath: "/Users/example/copy\0.wav" },
-  },
-  {
-    name: "volume can change without a custom sound",
-    settings: { volume: 0.5 },
-    expectedVolume: "0.5",
-  },
-  {
-    name: "full volume is accepted",
-    settings: { volume: 1 },
-    expectedVolume: "1",
-  },
-  ...["0.5", null, -1, 2, NaN, Infinity].map((volume) => ({
-    name: `invalid volume ${String(volume)} (${typeof volume}) uses default gain`,
-    settings: { volume },
-  })),
-];
-
-for (const {
-  name,
-  settings,
-  expectedPath = defaultSoundPath,
-  expectedVolume = "0.25",
-} of configurationCases) {
-  test(name, async (t) => {
-    const playback = t.mock.method(
-      childProcess,
-      "execFile",
-      (_command, _args, _options, callback) => {
-        callback(null);
-      },
-    );
-    const { detectors } = await setupPlugin();
-    const { ctx, calls } = createHost({ settings });
-    const input = createInput("copy");
-
-    await detectors["copy-sound"](input, ctx);
-
-    assert.equal(playback.mock.callCount(), 1);
-    assert.deepEqual(playback.mock.calls[0].arguments.slice(0, 3), [
-      "/usr/bin/afplay",
-      ["-v", expectedVolume, expectedPath],
-      { timeout: 1000, maxBuffer: 16 * 1024 },
-    ]);
-    assert.deepEqual(calls, [{ method: "settings.get", params: {} }]);
+test("failure of both sounds logs one warning without rejecting", async () => {
+  const f = await fixture({
+    settings: { soundPath: "package/assets/private.wav" },
+    playSound: () => { throw hostError("PluginResourceRejected"); },
   });
-}
-
-test("zero volume skips playback", async (t) => {
-  const playback = t.mock.method(
-    childProcess,
-    "execFile",
-    (_command, _args, _options, callback) => {
-      callback(null);
-    },
-  );
-  const { detectors } = await setupPlugin();
-  const { ctx, calls } = createHost({ settings: { volume: 0 } });
-  const input = createInput("copy");
-
-  await detectors["copy-sound"](input, ctx);
-
-  assert.equal(playback.mock.callCount(), 0);
-  assert.deepEqual(calls, [{ method: "settings.get", params: {} }]);
+  await f.detect();
+  assert.equal(f.sounds().length, 2);
+  assert.equal(f.warnings().length, 1);
+  assert.ok(!f.warnings()[0].message.includes("private"));
 });
 
-test("failed custom playback falls back to the bundled sound at the configured volume", async (t) => {
-  const customSoundPath = "/Users/example/private/custom.wav";
-  const playback = t.mock.method(
-    childProcess,
-    "execFile",
-    (_command, args, _options, callback) => {
-      callback(args[2] === customSoundPath ? new Error(customSoundPath) : null);
-    },
-  );
-  const { detectors } = await setupPlugin();
-  const { ctx, calls } = createHost({
-    settings: { soundPath: customSoundPath, volume: 0.4 },
-  });
-  const input = createInput("copy");
-
-  await detectors["copy-sound"](input, ctx);
-  const logCalls = calls.filter(({ method }) => method === "log.write");
-
-  assert.deepEqual(
-    playback.mock.calls.map(({ arguments: args }) => args[1]),
-    [
-      ["-v", "0.4", customSoundPath],
-      ["-v", "0.4", defaultSoundPath],
-    ],
-  );
-  assert.ok(
-    playback.mock.calls.reduce(
-      (total, { arguments: args }) => total + args[2].timeout,
-      0,
-    ) < 3000,
-  );
-  assert.equal(logCalls.length, 1);
-  assert.equal(logCalls[0].params.level, "warn");
-  assert.match(logCalls[0].params.message, /bundled click/);
-  assert.ok(!logCalls[0].params.message.includes(customSoundPath));
+test("settings failures use the default path and gain without exposing error details", async () => {
+  const f = await fixture({ settingsError: new Error("private settings error") });
+  await f.detect();
+  assert.deepEqual(f.sounds(), [{ path: defaultPath, volume: 25 }]);
+  assert.equal(f.warnings().length, 1);
+  assert.match(f.warnings()[0].message, /could not read its settings/);
+  assert.ok(!f.warnings()[0].message.includes("private"));
 });
 
-test("failure of both sounds is logged without rejecting the detector", async (t) => {
-  const error = new Error("private clipboard text");
-  const playback = t.mock.method(
-    childProcess,
-    "execFile",
-    (_command, _args, _options, callback) => {
-      callback(error);
-    },
-  );
-  const { detectors } = await setupPlugin();
-  const { ctx, calls } = createHost({
-    settings: { soundPath: "/Users/example/custom.wav" },
-  });
-  const input = createInput("copy");
-
-  await detectors["copy-sound"](input, ctx);
-  const logCalls = calls.filter(({ method }) => method === "log.write");
-
-  assert.equal(playback.mock.callCount(), 2);
-  assert.equal(logCalls.length, 1);
-  assert.equal(logCalls[0].params.level, "warn");
-  assert.match(logCalls[0].params.message, /could not play/);
-  assert.ok(!logCalls[0].params.message.includes(input.content.text));
-});
-
-test("unavailable settings use the bundled sound and default volume", async (t) => {
-  const playback = t.mock.method(
-    childProcess,
-    "execFile",
-    (_command, _args, _options, callback) => {
-      callback(null);
-    },
-  );
-  const { detectors } = await setupPlugin();
-  const { ctx, calls } = createHost({
-    settingsError: new Error("private settings error"),
-  });
-  const input = createInput("copy");
-
-  await detectors["copy-sound"](input, ctx);
-  const logCalls = calls.filter(({ method }) => method === "log.write");
-
-  assert.equal(playback.mock.callCount(), 1);
-  assert.deepEqual(playback.mock.calls[0].arguments[1], [
-    "-v",
-    "0.25",
-    defaultSoundPath,
-  ]);
-  assert.equal(logCalls.length, 1);
-  assert.equal(logCalls[0].params.level, "warn");
-  assert.match(logCalls[0].params.message, /could not read its settings/);
-  assert.ok(!logCalls[0].params.message.includes("private settings error"));
-});
-
-test("settings are read again on the next copy", async (t) => {
-  const settings = { soundPath: "/Users/example/first.wav", volume: 0.2 };
-  const playback = t.mock.method(
-    childProcess,
-    "execFile",
-    (_command, _args, _options, callback) => {
-      callback(null);
-    },
-  );
-  const { detectors } = await setupPlugin();
-  const { ctx } = createHost({ settings });
-  const copy = createInput("copy");
-  const recopy = createInput("recopy");
-
-  await detectors["copy-sound"](copy, ctx);
-  settings.soundPath = "/Users/example/second.wav";
+test("path and volume settings are read on every copy", async () => {
+  const settings = { soundPath: "package/assets/first.wav", volume: 0.2 };
+  const f = await fixture({ settings });
+  await f.detect();
+  settings.soundPath = "package/assets/second.mp3";
   settings.volume = 0.7;
-  await detectors["copy-sound"](recopy, ctx);
-
-  assert.deepEqual(
-    playback.mock.calls.map(({ arguments: args }) => args[1]),
-    [
-      ["-v", "0.2", "/Users/example/first.wav"],
-      ["-v", "0.7", "/Users/example/second.wav"],
-    ],
-  );
+  await f.detect("recopy");
+  settings.volume = 0;
+  await f.detect();
+  assert.deepEqual(f.sounds(), [
+    { path: "package/assets/first.wav", volume: 20 },
+    { path: "package/assets/second.mp3", volume: 70 },
+  ]);
 });
 
-test("logging failures do not reject the detector", async (t) => {
-  const playback = t.mock.method(
-    childProcess,
-    "execFile",
-    (_command, _args, _options, callback) => {
-      callback(new Error("Audio output unavailable"));
-    },
-  );
-  const { detectors } = await setupPlugin();
-  const { ctx, calls } = createHost({
+test("logging failures do not reject the detector", async () => {
+  const f = await fixture({
     settingsError: new Error("Settings unavailable"),
     logError: new Error("Log unavailable"),
+    playSound: () => { throw new Error("Audio output unavailable"); },
   });
-  const input = createInput("copy");
+  await f.detect();
+  assert.deepEqual(f.sounds(), [{ path: defaultPath, volume: 25 }]);
+  assert.equal(f.warnings().length, 2);
+});
 
-  await detectors["copy-sound"](input, ctx);
-
-  assert.equal(playback.mock.callCount(), 1);
-  assert.deepEqual(
-    calls.map(({ method }) => method),
-    ["settings.get", "log.write", "log.write"],
-  );
+test("the bundled click is PCM16 WAV within installed SDK sound limits", async () => {
+  const { PLUGIN_SOUND_LIMITS: limits } = await import("@clipbus/plugin-sdk");
+  const audio = readFileSync(path.join(root, "assets/click.wav"));
+  assert.equal(audio.toString("ascii", 0, 4), "RIFF");
+  assert.equal(audio.toString("ascii", 8, 12), "WAVE");
+  assert.equal(audio.readUInt32LE(4) + 8, audio.length);
+  assert.ok(audio.length <= limits.maximumFileBytes);
+  let format;
+  let dataBytes = 0;
+  let chunks = 0;
+  for (let offset = 12; offset + 8 <= audio.length;) {
+    const id = audio.toString("ascii", offset, offset + 4);
+    const size = audio.readUInt32LE(offset + 4);
+    const start = offset + 8;
+    assert.ok(start + size <= audio.length);
+    if (id === "fmt ") format = audio.subarray(start, start + size);
+    if (id === "data") dataBytes += size;
+    offset = start + size + size % 2;
+    chunks++;
+  }
+  assert.ok(chunks <= limits.maximumChunks);
+  assert.ok(format && format.length >= 16);
+  assert.equal(format.readUInt16LE(0), 1);
+  const channels = format.readUInt16LE(2);
+  const sampleRate = format.readUInt32LE(4);
+  const blockAlign = format.readUInt16LE(12);
+  assert.ok(channels === 1 || channels === 2);
+  assert.ok(sampleRate >= limits.minimumSampleRate && sampleRate <= limits.maximumSampleRate);
+  assert.equal(format.readUInt16LE(14), 16);
+  assert.equal(blockAlign, channels * 2);
+  assert.equal(format.readUInt32LE(8), sampleRate * blockAlign);
+  assert.ok(dataBytes > 0 && dataBytes % blockAlign === 0);
+  assert.ok(dataBytes / blockAlign / sampleRate * 1000 <= limits.maximumDurationMs);
 });

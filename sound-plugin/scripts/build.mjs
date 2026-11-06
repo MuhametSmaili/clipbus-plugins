@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-await access(new URL("../assets/click.aiff", import.meta.url));
+await access(new URL("../assets/click.wav", import.meta.url));
 await mkdir(new URL("../dist/", import.meta.url), { recursive: true });
 await build({
   absWorkingDir: root,

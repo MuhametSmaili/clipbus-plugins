@@ -1,12 +1,11 @@
 {
-  "schemaVersion": 5,
+  "schemaVersion": 6,
   "plugin": {
     "id": "plugin.clipbus.sound",
     "title": "Copy Sound",
     "version": "1.0.0"
   },
   "install": {
-    "runtime": "node",
     "entry": "scripts/install.mjs"
   },
   "runtime": {

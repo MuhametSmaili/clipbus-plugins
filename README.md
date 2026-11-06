@@ -4,7 +4,9 @@ A collection of independent plugins for [Clipbus](https://clipbus.com).
 
 | Plugin                               | Description                                                   | Install subdirectory | Platform |
 | ------------------------------------ | ------------------------------------------------------------- | -------------------- | -------- |
-| [Copy Sound](sound-plugin/README.md) | A quiet click on copy, with optional custom audio and volume. | `sound-plugin`       | macOS    |
+| [Copy Sound](sound-plugin/README.md) | A quiet click on copy, with packaged custom audio and adjustable volume. | `sound-plugin`       | macOS / Windows |
+
+Requires a Host with per-playback sound volume support; see [compatibility](sound-plugin/README.md#compatibility). SDK installation alone does not enable new Host audio features.
 
 ## Install a plugin
 
