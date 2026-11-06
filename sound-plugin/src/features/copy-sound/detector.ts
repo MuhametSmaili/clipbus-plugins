@@ -1,74 +1,52 @@
-import { execFile } from "node:child_process";
+import { isHostError, PLUGIN_ERROR_NAMES } from "@clipbus/plugin-sdk";
 import type {
   PluginDetectInput,
-  PluginPlatform,
   PluginRuntimeCtx,
 } from "@clipbus/plugin-sdk/runtime";
-import { resolveSoundSettings, type SoundSettings } from "./settings.ts";
-
-function playSound(soundPath: string, volume: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "/usr/bin/afplay",
-      ["-v", String(volume), soundPath],
-      { timeout: 1000, maxBuffer: 16 * 1024 },
-      (error) => {
-        if (error)
-          reject(new Error("Sound playback failed.", { cause: error }));
-        else resolve();
-      },
-    );
-  });
-}
+import { DEFAULT_SOUND_PATH, resolveSoundSettings, type SoundSettings } from "./settings.ts";
 
 function logWarning(ctx: PluginRuntimeCtx, message: string): Promise<void> {
   return ctx.log.write({ level: "warn", message }).catch(() => undefined);
 }
 
-export function createCopySoundDetector(
-  defaultSoundPath: string,
-  platform: PluginPlatform,
-) {
-  return async (
-    input: PluginDetectInput,
-    ctx: PluginRuntimeCtx,
-  ): Promise<void> => {
-    if (platform !== "macos") return;
-    if (input.trigger !== "copy" && input.trigger !== "recopy") return;
+export async function detectCopySound(
+  input: PluginDetectInput,
+  ctx: PluginRuntimeCtx,
+): Promise<void> {
+  if (input.trigger !== "copy" && input.trigger !== "recopy") return;
+  if (!ctx.capabilities.has("system.playSound")) return;
 
-    let settings: SoundSettings = {};
-    try {
-      const { values } = await ctx.settings.get<SoundSettings>();
-      settings = values;
-    } catch {
-      await logWarning(
-        ctx,
-        "Copy Sound could not read its settings. Using the default sound and volume.",
-      );
-    }
-
-    const { soundPath, volume } = resolveSoundSettings(
-      settings,
-      defaultSoundPath,
+  let settings: SoundSettings = {};
+  try {
+    const { values } = await ctx.settings.get<SoundSettings>();
+    settings = values;
+  } catch {
+    await logWarning(
+      ctx,
+      "Copy Sound could not read its settings. Using the bundled click.",
     );
-    if (volume === 0) return;
+  }
 
+  const { soundPath, muted } = resolveSoundSettings(settings);
+  if (muted) return;
+
+  try {
     try {
-      try {
-        await playSound(soundPath, volume);
-      } catch (error) {
-        if (soundPath === defaultSoundPath) throw error;
-        await playSound(defaultSoundPath, volume);
-        await logWarning(
-          ctx,
-          "Copy Sound could not play the custom sound. Using the bundled click.",
-        );
-      }
-    } catch {
+      await ctx.system.playSound({ path: soundPath });
+    } catch (error) {
+      if (isHostError(error, PLUGIN_ERROR_NAMES.limitExceeded)) return;
+      if (soundPath === DEFAULT_SOUND_PATH) throw error;
+      await ctx.system.playSound({ path: DEFAULT_SOUND_PATH });
       await logWarning(
         ctx,
-        "Copy Sound could not play its sound. Check the audio output and bundled assets/click.aiff.",
+        "Copy Sound could not play the custom sound. Using the bundled click.",
       );
     }
-  };
+  } catch (error) {
+    if (isHostError(error, PLUGIN_ERROR_NAMES.limitExceeded)) return;
+    await logWarning(
+      ctx,
+      "Copy Sound could not start sound playback. Check the audio output and bundled assets/click.wav.",
+    );
+  }
 }

@@ -4,7 +4,7 @@ A collection of independent plugins for [Clipbus](https://clipbus.com).
 
 | Plugin                               | Description                                                   | Install subdirectory | Platform |
 | ------------------------------------ | ------------------------------------------------------------- | -------------------- | -------- |
-| [Copy Sound](sound-plugin/README.md) | A quiet click on copy, with optional custom audio and volume. | `sound-plugin`       | macOS    |
+| [Copy Sound](sound-plugin/README.md) | A quiet WAV click on copy, with mute and packaged custom audio. | `sound-plugin`       | macOS (Clipbus 3.1+) |
 
 ## Install a plugin
 

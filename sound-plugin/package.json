@@ -13,7 +13,7 @@
     "verify": "clipbus-validate-manifest . && npm run build && clipbus-validate-manifest . --runtime && npm test"
   },
   "dependencies": {
-    "@clipbus/plugin-sdk": "^2.0.0"
+    "@clipbus/plugin-sdk": "^3.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
