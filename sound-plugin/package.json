@@ -1,6 +1,6 @@
 {
   "name": "clipbus-sound-plugin",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "description": "A subtle sound whenever Clipbus detects a copy.",
   "engines": {
@@ -13,7 +13,7 @@
     "verify": "clipbus-validate-manifest . && npm run build && clipbus-validate-manifest . --runtime && npm test"
   },
   "dependencies": {
-    "@clipbus/plugin-sdk": "^2.0.0"
+    "@clipbus/plugin-sdk": "^3.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -2,9 +2,9 @@
 
 A collection of independent plugins for [Clipbus](https://clipbus.com).
 
-| Plugin                               | Description                                                   | Install subdirectory | Platform |
-| ------------------------------------ | ------------------------------------------------------------- | -------------------- | -------- |
-| [Copy Sound](sound-plugin/README.md) | A quiet click on copy, with optional custom audio and volume. | `sound-plugin`       | macOS    |
+| Plugin                               | Description                                                    | Install subdirectory | Platform |
+| ------------------------------------ | -------------------------------------------------------------- | -------------------- | -------- |
+| [Copy Sound](sound-plugin/README.md) | A quiet click on copy, with volume and bundled-sound settings. | `sound-plugin`       | macOS    |
 
 ## Install a plugin
 
@@ -14,7 +14,7 @@ A collection of independent plugins for [Clipbus](https://clipbus.com).
 4. Leave **Ref** blank to use the default branch, or enter a specific branch, tag, or commit.
 5. Click **Install**, then enable the plugin and its detector in Clipbus's detector settings.
 
-Clipbus runs the plugin's install hook to install dependencies and build it. Normal installation does not require a manual clone or build. See each plugin's README for configuration, requirements, and limitations.
+Clipbus asks for confirmation before running the plugin's Node install hook to install locked dependencies and build it. Dependency lifecycle scripts are disabled; the explicit build still runs. Normal installation does not require a manual clone or build. See each plugin's README for configuration, requirements, and limitations.
 
 ## Development
 

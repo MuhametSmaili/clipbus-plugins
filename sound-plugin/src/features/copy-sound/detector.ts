@@ -1,40 +1,29 @@
-import { execFile } from "node:child_process";
+import { isHostError, PLUGIN_ERROR_NAMES } from "@clipbus/plugin-sdk";
 import type {
   PluginDetectInput,
   PluginPlatform,
   PluginRuntimeCtx,
 } from "@clipbus/plugin-sdk/runtime";
-import { resolveSoundSettings, type SoundSettings } from "./settings.ts";
-
-function playSound(soundPath: string, volume: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "/usr/bin/afplay",
-      ["-v", String(volume), soundPath],
-      { timeout: 1000, maxBuffer: 16 * 1024 },
-      (error) => {
-        if (error)
-          reject(new Error("Sound playback failed.", { cause: error }));
-        else resolve();
-      },
-    );
-  });
-}
+import {
+  DEFAULT_SOUND_PATH,
+  resolveSoundSettings,
+  type SoundSettings,
+} from "./settings.ts";
 
 function logWarning(ctx: PluginRuntimeCtx, message: string): Promise<void> {
   return ctx.log.write({ level: "warn", message }).catch(() => undefined);
 }
 
-export function createCopySoundDetector(
-  defaultSoundPath: string,
-  platform: PluginPlatform,
-) {
+export function createCopySoundDetector(platform: PluginPlatform) {
+  let rejectedSoundPath: string | undefined;
+
   return async (
     input: PluginDetectInput,
     ctx: PluginRuntimeCtx,
   ): Promise<void> => {
     if (platform !== "macos") return;
     if (input.trigger !== "copy" && input.trigger !== "recopy") return;
+    if (!ctx.capabilities.has("system.playSound")) return;
 
     let settings: SoundSettings = {};
     try {
@@ -47,27 +36,31 @@ export function createCopySoundDetector(
       );
     }
 
-    const { soundPath, volume } = resolveSoundSettings(
-      settings,
-      defaultSoundPath,
-    );
+    const { soundPath, volume } = resolveSoundSettings(settings);
     if (volume === 0) return;
+    if (soundPath !== rejectedSoundPath) rejectedSoundPath = undefined;
+    const playbackPath =
+      soundPath === rejectedSoundPath ? DEFAULT_SOUND_PATH : soundPath;
 
     try {
-      try {
-        await playSound(soundPath, volume);
-      } catch (error) {
-        if (soundPath === defaultSoundPath) throw error;
-        await playSound(defaultSoundPath, volume);
+      await ctx.system.playSound({ path: playbackPath, volume });
+    } catch (error) {
+      if (isHostError(error, PLUGIN_ERROR_NAMES.limitExceeded)) return;
+      if (isHostError(error, PLUGIN_ERROR_NAMES.capabilityUnsupported)) return;
+      if (
+        playbackPath !== DEFAULT_SOUND_PATH &&
+        isHostError(error, PLUGIN_ERROR_NAMES.resourceRejected)
+      ) {
+        rejectedSoundPath = playbackPath;
         await logWarning(
           ctx,
-          "Copy Sound could not play the custom sound. Using the bundled click.",
+          "Copy Sound could not play the custom sound. The bundled click will be used on the next copy; reload the plugin to retry the custom sound.",
         );
+        return;
       }
-    } catch {
       await logWarning(
         ctx,
-        "Copy Sound could not play its sound. Check the audio output and bundled assets/click.aiff.",
+        "Copy Sound could not play its sound. Check Clipbus sound support, the audio output and bundled assets/click.wav.",
       );
     }
   };

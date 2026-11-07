@@ -11,7 +11,7 @@ await access(npmPath);
 const resolvedPath = await realpath(npmPath);
 const isJavaScriptCli = /\.(?:c|m)?js$/i.test(resolvedPath);
 const command = isJavaScriptCli ? process.execPath : npmPath;
-const prefix = isJavaScriptCli ? [resolvedPath] : [];
+const prefix = isJavaScriptCli ? [npmPath] : [];
 
 function runNpm(args) {
   return new Promise((resolve, reject) => {
